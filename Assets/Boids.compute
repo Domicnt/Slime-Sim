@@ -1,0 +1,86 @@
+// Each #kernel tells which function to compile; you can have many kernels
+#pragma kernel CSMain
+
+struct Agent {
+    float2 position;
+    float2 velocity;
+};
+
+RWStructuredBuffer<Agent> agents;
+float2 resolution;
+float trailFollowSpeed;
+float4 agentColor;
+
+RWTexture2D<float4> image;
+
+[numthreads(100, 1, 1)]
+void CSMain (uint3 id : SV_DispatchThreadID)
+{
+    Agent agent = agents[id.x];
+
+    //follow trails of other agents
+    int sensorSize = 5;
+    float offsetDist = 7;
+    float2 relativePosition = agent.velocity * offsetDist;
+    float2 sensorPosition = agent.position + relativePosition;
+    float agentColorBrightness = agentColor.x + agentColor.y + agentColor.z;
+    for (int x = -sensorSize; x <= sensorSize && sensorPosition.x + x >= 0 && sensorPosition.x + x <= resolution.x; x++) {
+        for (int y = -sensorSize; y <= sensorSize && sensorPosition.y + y >= 0 && sensorPosition.y + y <= resolution.y; y++) {
+            float4 color = image[int2(sensorPosition.x + x, sensorPosition.y + y)];
+            float colorStrength = (color.x + color.y + color.z) / agentColorBrightness;
+            //increase speed in the (x, y) direction by the brightness of the adjacent pixel in that direction
+            if (colorStrength < .999) 
+                agent.velocity += float2(x + relativePosition.x, y + relativePosition.y) * colorStrength * trailFollowSpeed;
+            else if ((int) (agent.position.x + agent.position.y) % 2 == 0)
+                agent.velocity += float2(-x - relativePosition.x, y + relativePosition.y) * colorStrength * trailFollowSpeed;
+            else
+                agent.velocity += float2(x + relativePosition.x, -y - relativePosition.y) * colorStrength * trailFollowSpeed;
+        }
+    }
+
+    //normalize velocity
+    agent.velocity /= length(agent.velocity);
+
+        //avoid edges
+    float avoidDist = 5;
+    if (agent.position.x < avoidDist) {
+        agent.velocity.x += .25;
+        agent.velocity.y *= 1.001;
+    } else if (agent.position.x + avoidDist > resolution.x) {
+        agent.velocity.x -= .25;
+        agent.velocity.y *= 1.001;
+    }
+    if (agent.position.y < avoidDist) {
+        agent.velocity.y += .25;
+        agent.velocity.x *= 1.001;
+    } else if (agent.position.y + avoidDist > resolution.y) {
+        agent.velocity.y -= .25;
+        agent.velocity.x *= 1.001;
+    }
+
+    //normalize velocity
+    agent.velocity /= length(agent.velocity);
+    agent.position += agent.velocity;
+    agents[id.x] = agent;
+
+    image[agent.position] = agentColor;
+}
+
+#pragma kernel Diffuse
+
+float diffuseStrength;
+
+[numthreads(8,8,1)]
+void Diffuse (uint3 id : SV_DispatchThreadID)
+{
+    float4 averageColor = float4(0, 0, 0, 1);
+    int samples = 0;
+    for (int x = -1; x <= 1 && id.x + x >= 0 && id.x + x <= resolution.x; x++) {
+        for (int y = -1; y <= 1 && id.y + y >= 0 && id.y + y <= resolution.y; y++) {
+            averageColor += image[int2(id.x + x, id.y + y)];
+            samples += 1;
+        }
+    }
+    averageColor /= samples;
+    image[id.xy] = averageColor - diffuseStrength;
+}
